@@ -1,0 +1,86 @@
+jieba.finalseg.__init__
+
+from __future__ import with_statement
+import re
+import os
+import marshal
+import sys
+
+PROB_START_P = "prob_start.p"
+PROB_TRANS_P = "prob_trans.p"
+PROB_EMIT_P = "prob_emit.p"
+MIN_FLOAT = -3.14e100  # 负无穷
+
+#BEMS   B表示开始  E表示结束  M表示在中间   S表示单独一个
+PrevStatus = {         #当前状态 和 可能的前一状态
+    'B':('E','S'),
+    'M':('M','B'),
+    'S':('S','E'),
+    'E':('B','M')
+}
+
+def load_model():
+	_curpath = 拿到当前执行文件(谁执行的这个文件)的路径--即__init__所在文件夹的路径
+	start_p = {}
+	abs_path = 将prob_start.p加上当前路径_curpath
+	打开prob_start.p，并导入数据，导入至start_p
+	依次更新abs_path为"prob_trans.p"，"prob_emit.p",打开文件，并导入至trans_p,emit_p
+	返回:start_p,trans_p,emit_p
+	pass
+	
+1、如果是java虚拟机调用，才会执行start_P, trans_P, emit_P = load_model()
+1、否则，直接import prob_start,prob_trans,prob_emit，并用.P调用其中的文件，存入start_P, trans_P, emit_P
+
+隐马氏模型:BMSE为hidden state   word为obs state
+start_P, trans_P, emit_P都为字典套字典的格式
+start_P:{B,M,S,E:score}  #BMSE作为开始状态的概率
+trans_P:{B,M,S,E:{B,M,S,E:score}}   #BMSE之间转移概率
+emit_P:{B,M,S,E:{unicode_word:score}}  #BMSE下word的概率
+
+def viterbi(obs,states,start_p,trans_p,emit_p):# 从前向后   states基本就是('B','M','E','S')
+	V = [{}]  # dict list   第一个索引t表示第t个字典，即时间t
+	path = {}
+	遍历states的元素y：#states为hidden state序列    obs为obs state序列 两个序列的索引都为时间  初始化0时刻的状态和概率
+		V[0][y] = start_p[y] + emit_p[y].get(obs[0],MIN_FLOAT)  # y作为开始状态的概率+y中obs[0]出现时对y增加的概率(置信度提升)，如果没出现过设为负无穷
+		path[y] = [y]  # 记录可能的hidden state序列，以y为开头   注意，for进入下个时刻时，y就成了上一时刻结尾的状态 就可以和当前时刻的y进行拼接，形成新的路径
+	a、遍历obs state序列,即按照时间向前走：
+		V.append({})   # 时间前进时，增加{}
+		newpath = {}
+		遍历states的元素y:
+			em_p = y中obs[t]出现时对y增加的概率(置信度提升)，如果没出现过设为负无穷
+			(prob,state ) = max([(V[t-1][y0] + trans_p[y0].get(y, MIN_FLOAT) + em_p, y0) for y0 in PrevStatus[y]])   
+            #遍历所有y的允许的前一状态y0(PrevStatus)    V[t-1][y0] t-1时刻y0出现的概率  +   y0的到y的转移概率   +  t时刻观测值下y出现的概率(em_p)  找出最可能的y的前一状态y0和y对应的概率值
+			#对每个t时刻的hidden state找出最可能(出现，转移，观测)的前一时刻hidden state
+			V[t][y] = prob  # 记录概率值
+			newpath[y] = path[state] + [y]     # 更新路径   因为同一个state后面可能有两个不同的y，所以还是要存成key-value
+		path = newpath # 更新path
+		#注意：某一时刻的同一状态y只能出现在一条轨迹上。这保证算法复杂度没暴增。
+	(prob, state) = max([(V[len(obs)-1][y], y) for y in ('E','S')])
+	#最终时刻单独处理，因为最终时刻的y只能在 E,S里面选，从已经计算出的a中找出最终时刻的最可能状态
+	返回最终状态概率和对应的轨迹
+	pass
+	
+def __cut(sentence):
+	调用全局变量 emit_P
+	对传入的句子sentence调用viterbi算法，拿到最终状态概率prob和对应的轨迹pos_list
+	begin,next = 0,0 # 用来记录分词的开始位置，下一个位置
+	遍历sentence中的索引i:
+		拿到同等位置i下轨迹pos_list的状态
+		1、如果第i个字的状态是B  则第i个字是开始字，begin = i
+		1、如果状态是E,就yield sentence[begin:i+1] 因为E是结束状态，同时把next向后移一位
+		1、如果状态是S:就yield这个汉字  因为S表示单独汉字
+	如果遍历结束后，next < len(sentence):就直接yield sentence[next:] 虽然这种情况不太可能，因为viterbi最后的状态一定是E或者S
+	转移概率和可能的前一状态集PrevStatus规避了很多病态情况	
+	pass
+
+def cut(sentence): # 这个函数不能处理中英混合的情况  如A股
+	如果sentence不是unicode：
+		就尝试用utf-8解码，否则按照gbk解码
+		re_han汉字,re_skip小数或数字大小写字母组合
+		按照汉字分割句子sentence拿到blocks
+		遍历blocks中的blk：
+			1、如果是汉字，就调用__cut去切分
+			1、否则，用数字或者数字和字母混合去split,遍历split结果，并逐个yield
+
+
+

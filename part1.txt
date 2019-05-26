@@ -1,0 +1,431 @@
+jieba.__init__.py
+
+依赖：
+外部包：
+re sys time logging  threading  shutil  hashlib.md5  marshal tempfile  math.log   
+
+内部包：
+jieba._compat.py   jieba.finalseg
+
+
+api or 变量:
+_replace_file   如果是windows   为shui.move   否则为os.rename    (因为windows下重命名不能覆盖)
+_get_abs_path   一个函数，拼接当前路径和文件名，拿到绝对路径
+
+# 默认字典为None  但是有名字
+DEFAULT_DICT = None
+DEFAULT_DICT_NAME = "dict.txt"
+
+# 日志系统
+default_logger = logging.getLogger(__name__)   级别为debug   streamhandler为StreamHandler(sys.stderr)
+
+DICT_WRITING = {}  # key:写入dictionary的绝对路径，value:对应的线程锁   锁保证写入dictionary时不出现冲突
+pool = None
+
+re_userdict      任意长度字符(开头)+" "+任意长度数字+" "+任意长度字母(结尾)
+re_eng           一个大小写字母或者数字
+re_han_default   有至少一个汉字or字母or数字or"+#&\._"的组合  只能匹配str格式的unicode
+re_skip_default  换行，制表符，空格，翻页等空白字符
+re_han_cut_all   至少一个汉字
+re_skip_cut_all  除了英文大小写字母，数字和+#\n
+# 注意，以上正则表达式如果直接匹配str格式的unicode,就会直接拿到正则表达式对应的效果    此时需要 unicode.encode("unicode-escape")
+# 如果直接匹配unicode,则汉字部分正则起反作用居然。。。匹配出的是非中文
+# 如果from __future__ import unicode_literals 那么上面这两条不成立，正则表达式可以直接匹配unicode
+
+def setLogLevel(log_level): pass  # 设置日志上限级别
+class Tokenizer：
+	def __init__(self,dictionary=DEFAULT_DICT):  # 初始化   
+		self.lock  # 线程锁
+		self.dictionary  # 字典(如果是DEFAULT_DICT那么保持不变。否则dictionary为字典名，通过_get_abs_path拿到绝对路径进行定位)
+		self.FREQ  # 先验词表(存储词的重要程度）
+		self.total  # 词频总和
+		self.user_word_tag_tab # 存词性
+		self.initialized  # 记录是否初始化过了（没初始化过为False，默认为False）
+		self.tmp_dir  # 临时目录
+		self.cache_file # 缓存文件
+		pass
+	def __repr__(self):  pass # 打印显示结果(返回字典,None即默认字典或者给定字典的绝对路径)
+	def gen_pfdict(self,f):  #对f的文件格式有要求    f 输入文件（f=open(self.dictionary,'rb')或者get_module_res(DEFAULT_DICT_NAME)）    用来获取f中的词和衍生词和字及其词频
+		lfreq   # 保存f中的词和词频
+		ltotal  # 保存f中所有词频的和
+		f_name  # 获取f的name字段  如果没有，就获取f的repr   ---依赖jieba._compat中的resolve_filename
+		1、从f中拿到每一行line，并标记好行号
+		2、将每一行line按照utf-8解码（将utf-8转成unicode）(这意味着self.FREQ里存的word都是unicode格式)
+		3、从line中可以拿到word和freq
+		4、以word为key  freq为value的形式存入 lfreq
+		5、词频累加到ltotal上
+		6、遍历word中的所有汉字，如果该汉字在lfreq中不存在，就添加进lfreq，且value为0(word此时为unicode所以比如\u4f60长度为1)
+		7、返回 lfreq和ltotal
+		如果读入失败(格式有问题),返回ValueError
+		pass
+	def get_dict_file(self): # 拿到(打开)self.dictionary文件
+		如果 self.dictionary等于None(默认词典)：执行get_module_res(DEFAULT_DICT_NAME)     因为此处默认字典是dict.txt，是在jieba包下面，所以需要拿到绝对路径再打开     get_module_res是_compat中的函数
+		否则 open(self.dictionary, 'rb')    此时self.dictionary保存了词典的路径
+		pass	
+	def initialize(self,dictionary=None): #初始化    传入词典默认为None    主要是为了初始化或者更新词典和cache,并导入它们
+		1、如果dictionary不为None(此时相当于有给定字典),就用_get_abs_path拿到传入dictionary的绝对路径(abs_path)和__init__导入的dictionary做比对：
+			如果二者相等，且self.initialized  则直接返回
+			否则，更新原来的dictionary路径，且self.initialized置False
+		2、如果没给出字典：
+			abs_path 设置为原词典路径（None 或者 某个路径）
+		加锁(全局锁)：
+			如果abs_path(即新传入的dictionary的绝对路径)在DICT_WRITING的key中，（此时报attriError）则pass  否则，pass(此时报KeyError)
+			如果self.initialized 则返回空值
+			
+			default_logger打印日志:"Building prefix dict from 后面跟字典路径 or default dictionary ..."
+			t1 = 存储 time.time()  开始计时
+			1、if有self.cache_file,就用cache_file把它存下来（此时cache_file存储cache文件路径）
+			2、elif如果abs_path 为DEFAULT_DICT(默认词典)，此时cahce_file赋值为jieba.cache(默认cache文件)
+			3、else cache_file 保存"jieba.u%s.cache"  其中%s存储 字典的绝对路径的utf-8编码的md5校验码
+			接着，cache_file 赋值为 将self.tmp_dir or tempfile.gettempdir（获取本地临时目录） 和 之前拿到的cache_file粘在一起(执行or时，优先看不是None的，否则取第一个)
+			用tmp_dir获取cache_file的所在目录路径
+			load_from_cache_fail  #表示导入cache是否失败      默认为True
+			如果：cache_file是文件 and (字典绝对路径abs_path等于DEFAULT_DICT or (cache_file的最后修改时间>abs_path的最后修改时间))，
+				那么就显示日志Loading model from cache %s" % cache_file。
+				尝试打开文件(open(cache_file, 'rb'))  cache_file,用marshal.load导入cache_file，拿到self.FREQ和self.total，将load_from_cache_fail置False
+				如果尝试失败，就将load_from_cache_fail置True
+				
+			如果：导入cache失败(cache_file不是文件，或者非默认字典的修改日期更晚，或者打开cache文件失败)
+				wlock = 从DICT_WRITING中拿到abs_path对应的锁，如果DICT_WRITING中没有abs_path就默认拿到threading.RLock()
+				DICT_WRITING[abs_path] = wlock
+				加锁(abs_path对应的局部锁)：
+					用gen_pfdict函数从self.get_dict_file()中拿到self.FREQ和self.total
+					default_logger打印日志："Dumping model to file cache %s" % cache_file)
+					尝试：
+						1、用tempfile.mkstemp(dir=tmpdir) 拿到文件描述符，和路径（tmpdir+临时文件名）
+						2、将该文件打开，并用marshal.dump写入
+						3、新文件(mkstemp生成的临时文件)替换(_replace_file)旧的cache_file  # 观察发现，似乎这个临时文件运行后没有被删除
+					尝试失败:default_logger打印日志"Dump cache file failed."
+				尝试：从 DICT_WRITING中删除abs_path(这个路径下的词典已经被dump完毕)  失败：就pass
+			self.initialized = True  # 表示已经执行过初始化了
+			default_logger 打印 "Loading model cost %.3f seconds." % (time.time() - t1))    上次时间戳为t1  记录时间
+			default_logger 打印 "Prefix dict has been built succesfully."
+	
+	def	check_initialized(self): pass	# 如果之前没执行过初始化，就执行
+	def get_DAG(self,sentence):  # 传入句子sentence(py2:unicode,py3:str)   用词典self.FREQ筛选，拿到所有可能的词
+		如果没初始化，就执行初始化。
+		DAG = {}   #  有向无环图
+		N # 统计sentence字数(一个汉字，字母，数字皆算作一个)
+		for k in xrange(N):
+			1、tmplist = []
+			2、提取sentence中第k个字
+			3、从当前字不断向后收纳字(包括当前字)作为词frag，只要这个词frag在self.FREQ中：如果FREQ中记录的词频不为0,tmplist就把它添加进去
+			4、最后如果tmplist没有元素(说明这个字向后截取不到在FREQ中有词频的词 或者 这个词不在FREQ中),就把这第k个字添加进tmplist
+			5、DAG[k] = tmplist   DAG的key为句子中字的索引，value为从key处向后截取拿到的词<索引>
+		返回 DAG(存有所有可能的词<索引>，将这个截词的过程连线，就能拿到一个有向无环图，所以此处叫DAG)
+		pass
+	def __cut_all(self,sentence): # 返回迭代器<切词结果，对DAG处理，最长切词范围内不会产生一个字的切分>  此处并没有排除一个字的可能，注意，这个结论很重要。
+		拿到句子的DAG(所有可能的词<索引>)
+		old_j = -1 # 记录切分词的位置，即已经切完的最长位置(防止进入1、中时，在已经切完的位置产生1个字的词，即已经成词就不会被拆成单个字)
+		遍历DAG，拿到key(字的索引k,和截取词列表L):
+			1、如果：只有L中只有一个元素(此处还是没排除一个字的情况),且索引k比old_j大(已经不在切分过的索引内了),yield这个词,更新old_j = L[0]
+			2、否则：遍历L中元素j，只要j>k(这样就把一个字的情况排除掉了),就yield sentence[k:j + 1] 再更新old_j = j
+			3、注意：如果j==k and k<=old_j ,此时不会更新old_j,也不会生成词。这意味着：在最长切分词范围内，不会产生一个字的词
+			4、只有在最长切分词边界处，L中没有比k大的索引，即L中是一个字的词时，下一次移动才使得 k > old_j,因为此时old_j没更新
+		pass
+	def calc(self,sentence,DAG,route):
+		N # 统计sentence字数(一个汉字，字母，数字皆算作一个)
+		route[N] = (0,0)  #  
+		logtotal = log(self.total)  # 对总词频取log
+		for idx in xrange(N - 1, -1, -1): # 倒序遍历DAG
+			route[idx]的计算:  
+			1、从self.FREQ获取切好的词(从DAG中遍历)的词频(如果为0或者为None，就变成1)记作a
+			2、分数：(log(a) - logtotal + route[x+1][0],x)   for x in DAG[idx]    即遍历DAG第idx个字向后截取的候选词list
+			3、其中，可见route[i]表示句子中第i个字向后截取~拿到的最大分数的索引<切词位置>，和对应的索引位置  即 route存储的value为二元组
+			4、max二元组时，默认是以第一个分量排序
+			5、倒序遍历的原因：  当前分词分数和在此基础上的后续分词有关。倒着分可以保证分数计算是一遍搞定的。
+			6、原理：就是要尽可能让分出的词的词频和最大  即要求词尽可能多，且词的词频在预设的dict中尽可能高
+			7、注意这个最优切分只针对self.FREQ有的情况，那么就很有可能只针对中文
+			
+		pass
+	def __cut_DAG_NO_HMM(self,sentence):  # 除了从calc的route中拿到所有的最佳切分词，还把连续的英文和数字合并在一起，单个汉字也会生成
+		拿到句子的DAG(所有可能的词<索引>)
+		route 是一个dict
+		通过调用self.calc拿到句子中每个字向后的最优切分位置，包含全局的最优切分，即从第一个字向后的最优切分i1，在i1后取最优切分，以此类推
+		x = 0 记录当前索引
+		拿到句子长度(句子字数)
+		buf = ''
+		只要x<N:
+			先从route中拿到当前索引向后的最优切分，进而拿到这个词l_word
+			如果这个词是一个大小写英文字母或者数字：
+				就写入buff
+				x = y (更新当前索引)
+			否则：
+				如果buff中有内容，就yield buff，同时置空buff
+				否则，yield切分的词l_word
+				x = y (更新当前索引)
+		遍历完成后，如果buf中有内容就yield，然后置空buff
+		pass	
+	def __cut_DAG(self,sentence): # 除了从calc的route中拿到所有的最佳切分词，调用模型(HMM)处理了字典中没有的词，也把单个字粘在了一起
+		拿到句子的DAG(所有可能的词<索引>)
+		route是一个dict
+		通过调用self.calc拿到句子中每个字向后的最优切分位置，包含全局的最优切分，即从第一个字向后的最优切分i1，在i1后取最优切分，以此类推
+		x = 0 记录当前索引
+		拿到句子长度(句子字数)
+		buf = ''
+		-----------------------------------上面和__cut_DAG_NO_HMM一模一样
+		只要x<N:
+			先从route中拿到当前索引向后的最优切分，进而拿到这个词l_word
+			如果l_word就是一个字(包含一个英文字母或数字的情况):
+				就写入buff  (l_word是一个字是不着急处理buff，等后面跟一个切出的完整词时再处理)
+			否则(此时l_word肯定是一个词)：
+				如果buf有内容：
+					如果buff中是一个字：那就yield这个buff
+					置空buff
+					否则(此时buff里面是个词)：
+						如果self.FREQ(先验词表中没这个词)：
+							调用finalseg.cut去切分这个buf,再逐词yield分词结果
+						否则(此时先验词词表中有这个词)：
+							就逐字yield，遍历这个词，即yield buff中的每个字(词表中有这个词，但是没切成一个词，说明逐字切是合理的)
+						置空buff
+				yield l_word (经过前面几部处理完buff后yield这个词)
+			更新当前索引x=y
+		如果buff不为空：(处理最后一个字符)
+			如果buff中只有一个字，就直接yield
+			如果self.FREQ(先验词表中没这个词)：
+				调用finalseg.cut去切分这个buf,再逐词yield分词结果
+			否则(此时先验词词表中有这个词)：
+				就逐字yield，遍历这个词，即yield buff中的每个字(词表中有这个词，但是没切成一个词，说明逐字切是合理的)
+		pass
+	def cut(self,sentence,cut_all=False,HMM=True):  # 整合几个切词组件的核心函数   返回切词结果
+		对sentence解码，拿到str<py3>或者unicode<py2>
+		1、如果cut_all:
+			re_han = re_han_cut_all  至少一个汉字
+            re_skip = re_skip_cut_all  排除英文大小写字母，数字和+#\n
+		1、否则:
+			re_han = re_han_default  有至少一个汉字or字母or数字or"+#&\._"的组合
+            re_skip = re_skip_default 换行，制表符，空格，翻页等空白字符
+		2、如果cut_all:
+			cut_block = self.__cut_all  调用__cut_all(对DAG处理后的，最长切词范围内不会产生一个字的切分)
+		2、elif HMM：#判断需不需要使用HMM
+			cut_block = self.__cut_DAG
+		2、否则 #不使用HMM：
+			cut_block = self.__cut_DAG_NO_HMM
+		~~~下面按照cut_all与否分开讨论~~~
+		blocks = re_han.split(sentence)   
+		#if cut_all 按照汉语作为分隔符切分，切分后返回list,同时保留分隔符
+		#else 按照有至少一个汉字or字母or数字or"+#&\._"的组合作为分隔符切分
+		遍历blocks中的块blk：
+			1、如果为""，就直接跳过
+			2、如果是re_han <中文>或者<中文和字母，数字，+#&\._>：就用cut_block(根据情况是不同的切词函数)去切这个blk，并yield每个切出的词
+			2、否则：
+				按照空白字符分割blk，拿到分割结果tmp
+				遍历tmp的元素x：
+				<如果cut_all为True，那么x除了空白字符，有可能是+#&\._,或者其他例外字符>
+				<如果cut_all为False，那么x只能是空白字符，或者其他例外字符>
+					1、如果是空白字符，就yield x
+					1、如果cut_all == False:遍历x中的每个字并yield  #逐个产生+#&\._
+					1、否则，直接yield x   #+#&\._已经在放在blk中被处理了
+		pass
+	def cut_for_search(self,sentence,HMM=True):  # 默认使用HMM   对切词结果再按照二字词和三字词截取出新词   搜索引擎专用   
+		调用self.cut切分句子sentence，拿到结果words
+		遍历words中的词w:
+			#下面两个语句并列，非嵌套关系
+			如果词长度>2:从头到尾(滑动)截取出所有二字词gram2，如果self.FREQ里面有，就yield这个词gram2
+			如果词长度>3:从头到尾(滑动)截取出所有三字词gram3，如果self.FREQ里面有，就yield这个词gram3
+			yield w
+		pass
+	def lcut(self,*args,**kwargs):
+		返回self.cut的list
+		pass
+	def lcut_for_search(self,*args,**kwargs):
+		返回self.cut_for_search的list
+		pass
+	_lcut = cut
+	_lcut_for_search = lcut_for_search
+	def _lcut_no_hmm(self,sentence):
+		返回self.lcut(sentence, False, False)
+		pass
+	def _lcut_all(self, sentence):
+		返回self.lcut(sentence, True)
+		pass
+	def _lcut_for_search_no_hmm(self, sentence):
+        返回 self.lcut_for_search(sentence, False)
+		pass
+	def add_word(self,word,freq=None,tag=None):
+		调用self.check_initialized()
+		word = strdecode(word)
+		如果freq不为None，就将freq转换成int类型，否则就调用self.suggest_freq(word, False) 存入freq
+		添加词进入self.FREQ，设置词频为freq
+		将新加入的词的词频加入总词频 self.total
+		如果有词性tag:self.user_word_tag_tab[word] = tag
+		从前向后截取word中的每个字wfrag：如果wfrag不在self.FREQ中，就把wfrag置入self.FREQ，同时词频置0
+		pass
+	def del_word(self,word):
+		调用self.add_word(word,0)即将一个词的词频置0
+		pass
+	def suggest_freq(self,segment,tune=False): # 需要调整权重的词segment   tune
+		调用self.check_initialized()
+		ftotal = float(self.total) 将总词频变成浮点型
+		freq=1
+		1、如果segment是string_types:
+			word = segment
+			调用self.cut(word, HMM=False)对word进行切词，并遍历分出的词seg:
+				freq *= self.FREQ.get(seg, 1) / ftotal     # freq是分出词的词频占总词频比例的乘积、
+			对 int(freq * self.total) + 1, self.FREQ.get(word, 1)这两个值取较大值置入freq
+			#即 对某个词word分词后的(子)词在总词频中的比例乘积 * 总词频 +1 和 这个词word的词频进行比较
+			#显然，左侧类似于条件概率，不断地乘以词出现的可能性，来和这个词在词典中存储的可能性比
+			#此处+1的作用相当于向上取整  
+			#本质上相当于用条件概率和词典本身修正词典本身不合理的词频，调整的倾向性为大的更合理
+		1、否则(segment不是规定的string_types，从后面可以看出，segment此处是string或者unicode的list)：
+			对segment中的每个元素进行解码存入segment，并将结果用''粘在一起存入word
+			遍历segment中的seg：freq *= self.FREQ.get(seg, 1) / ftotal
+			freq = min(int(freq * self.total), self.FREQ.get(word, 0))  # 调整的倾向性为小的更合理
+		2、if tune:调整word的词频为freq   
+		返回freq
+		# 这个函数说明：suggest_freq一个字是不会改变什么的，因为没有子词。
+        # 也说明为什么suggest之后，词频变大了，是因为倾向性为大。想要倾向性为小，就传入list		
+		pass
+	def load_userdict(self,f):#载入私人词典
+		调用self.check_initialized()
+		如果f是string_types类型:就打开f(此时认为f是个文件的路径),同时把f本身或者f的名字保存至f_name
+		#注意，open之后实际上就把内容全存进f了  f = open(...)
+		枚举f中的内容，编号为lineno(从0开始)   内容为ln:
+			line = ln.strip()
+			如果line不是text_type：
+				尝试将line按照utf-8解码，再去掉头部的'\ufeff'  带bom格式编码文本
+				尝试失败，打印 'dictionary file %s must be utf-8' % f_name
+			如果line为"":就跳过
+			word, freq, tag = re_userdict.match(line).groups()  # 拿到 词，词频和词性
+			如果freq不为None: 就把freq两侧去掉空格
+			如果tag不为None:就把tag两侧去掉空格
+			调用self.add_word(word,freq,tag)
+		pass
+	def tokenize(self,unicode_sentence,mode="default",HMM=True): 
+		# 对unicode_sentence切词，并返回每个切出的词的起始和终止位置,如果mode不是default，就把二字词和三字词(在FREQ中的)也yield出来
+		如果unicode_sentence不是规定的text_type：就报错"jieba: the input parameter should be unicode."
+		start = 0
+		如果 mode == "default":
+			调用self.cut(unicode_sentence, HMM=HMM),并遍历分词结果w:
+				width为切分词w的字数
+				yield (w, start, start + width)
+				start += width
+		否则:
+			调用self.cut(unicode_sentence, HMM=HMM),并遍历分词结果w:
+				width为切分词w的字数
+				如果字数>2:
+					遍历w的字数索引：
+						从头到尾拿到所有二字词，如果self.FREQ中有这个词，就yield它
+				同理处理字数>3的情况，此时yield三字词，它的起始和终止位置
+				yield (w, start, start + width)
+				start += width
+		pass
+	def set_dictionary(self,dictionary_path): # 设置词典
+		加锁：
+			拿到词典的绝对路径abs_path = _get_abs_path(dictionary_path)
+			判断是不是文件，如果不是报错
+			self.dictionary更新为abs_path
+			self.initialize置False
+		pass
+
+# api实现方式：<实例化后，取实例的方法作为api>	
+dt = Tokenizer()
+get_FREQ = lambda k, d=None: dt.FREQ.get(k, d)
+add_word = dt.add_word
+calc = dt.calc 
+cut = dt.cut
+lcut = dt.lcut
+cut_for_search = dt.cut_for_search 
+lcut_for_search = dt.lcut_for_search
+del_word = dt.del_word
+get_DAG = dt.get_DAG
+get_dict_file = dt.get_dict_file
+initialize = dt.initialize
+load_userdict = dt.load_userdict
+set_dictionary = dt.set_dictionary
+suggest_freq = dt.suggest_freq
+tokenize = dt.tokenize
+user_word_tag_tab = dt.user_word_tag_tab
+
+# 几个私有函数
+def _lcut_all(s):
+    return dt._lcut_all(s)
+def _lcut(s):
+    return dt._lcut(s)
+def _lcut_all(s):
+    return dt._lcut_all(s)
+def _lcut_for_search(s):
+    return dt._lcut_for_search(s)
+def _lcut_for_search_no_hmm(s):
+    return dt._lcut_for_search_no_hmm(s)
+def enable_parallel(processnum=None):  #传入参数为进程数  将单进程的api：cut和cut_for_search修改为多进程版本
+	调用全局变量 pool,dt,cut,cut_for_search
+	from multiprocessing import cpu_count
+	如果是windows,报错："jieba: parallel mode only supports posix system"
+	否则(linux,mac_os):
+		from multiprocessing import Pool
+	dt.check_initialized()
+	如果processnum为None,那么processnum = cpu_count()
+	pool = Pool(processnum)
+    cut = _pcut  # 修改api cut
+    cut_for_search = _pcut_for_search
+	pass
+def disable_parallel():
+	调用全局变量 pool,dt,cut,cut_for_search
+	如果pool没关掉:
+		就先关闭pool，然后将pool置None
+	然后将cut,cut_for_search修改为单进程版本
+	pass
+def _pcut(sentence,cut_all=False,HMM=True): #传入的不是一个句子 而是一堆句子
+	# 将sentence按照splitlines分成几个句子
+	# 调用pool.map 根据参数传入将_lcut_all,_lcut,_lcut_no_hmm直接作用到句子堆中，增加处理速度
+	# 逐行处理不适用
+	for r in result:  # 因为是句子堆，所以遍历两次
+        for w in r:
+            yield w
+	pass
+def _pcut_for_search(sentence,HMM=True):
+	类似_pcut
+	pass
+
+
+	
+jieba._compat.py
+
+依赖：
+外部包：os  sys  pkg_resources
+
+尝试:  导入 pkg_resources，get_module_res = lambda *res: pkg_resources.resource_stream(__name__,os.path.join(*res))   # 没找到pkg_resources的更多信息
+尝试失败(没有pkg_resources这个包)：
+			get_module_res = 拼接系统当前路径(即包路径)，调用的py文件(即jieba._compat)的路径(jieba)，和传入的参数名
+PY2  # 判断是不是python2			
+default_encoding   # 存储默认的文件系统编码方式
+
+if PY2:
+	text_type = unicode    # unicode编码(print(len(strings)) 就可以发现，python2中的真实文本类型是unicode  str只是看起来是汉字，其实是一堆字母和数字混在一起而已
+	string_types = (str,unicode)   # 字符串格式
+	iterkeys   # 遍历字典key的迭代器
+	itervalues # 遍历字典value的迭代器
+	iteritems  # 遍历字典item的迭代器
+else(python3):
+	text_type = str   # 文本格式也只有str
+	string = (str,)   # 一元组
+	iterkeys   # 遍历字典key的迭代器(拿取方式和python2有差别)
+	itervalues # 遍历字典value的迭代器
+	iteritems  # 遍历字典item的迭代器
+	
+def strdecode(sentence):  # 给句子解码
+	如果句子不是预设的文本类型：先尝试用utf-8解码，不行就再用gbk解码，返回解码后的句子
+	#py3 将utf-8读进来是bytes  decode("utf-8")之后是str（此时print 会出现汉字）  
+	#py2 读进来是str  decode之后是unicode  两个print都是汉字
+	pass
+def resolve_filename(f):  # 返回f的name字段，如果没有，就返回f自带的可以打印的形式
+	pass
+
+
+
+jieba.__main__.py   命令行处理文件，使jieba可以在命令行中被使用  python -m jieba XXX.txt>YYY.txt
+
+依赖
+import sys
+import jieba  # 导入jieba文件夹
+from argparse import ArgumentParser
+from ._compat import *
+
+
+
+
+
+
+
+
